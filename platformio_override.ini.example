@@ -1,0 +1,12 @@
+; Copy to platformio_override.ini and edit. PlatformIO merges this file on top of
+; platformio.ini automatically, and platformio_override.ini is gitignored — so it is
+; the right place for anything you must not commit, and for local-only tweaks.
+;
+; Use it for the OTA password, to match OTA_PASSWORD in include/secrets.h:
+[env:esp32c3-ota]
+upload_flags = --auth=choose-a-password
+
+; It is also handy for machine-specific serial ports, e.g.
+; [env:esp32c3]
+; upload_port = /dev/ttyUSB0
+; monitor_port = /dev/ttyUSB0

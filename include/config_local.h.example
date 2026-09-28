@@ -1,0 +1,39 @@
+// Copy to config_local.h and edit. config_local.h is gitignored, so your station
+// settings stay out of the repository and `git pull` never conflicts with them.
+//
+// Define ONLY what you want to change: everything else keeps the documented
+// default from config.h. See config.h for the full list of CFG_* settings.
+#pragma once
+
+// ---------- station (required) ----------
+#define CFG_CALLSIGN "N0CALL"   // your callsign
+#define CFG_LOCATOR  "JN00AA"   // your Maidenhead locator, 4 or 6 characters
+
+// ---------- optional ----------
+// Transmitter power you report in the message, in dBm. Should match reality:
+// 20 dBm = 100 mW, 23 = 200 mW, 27 = 500 mW, 30 = 1 W.
+// #define CFG_POWER_DBM 20
+
+// Si5351 frequency error, in parts per billion. This is specific to YOUR board
+// and the default of 0 will put you off frequency. Measure it once (see the
+// README "Calibration" section) and put the result here.
+// #define CFG_CORRECTION_PPB 0
+
+// Some Si5351 breakouts use a 27 MHz crystal instead of 25 MHz.
+// #define CFG_XTAL_FREQ_HZ 27000000UL
+
+// Band: the centre of the 200 Hz WSPR window. 40m = 7040100, 30m = 10140200,
+// 20m = 14097100, 17m = 18106100, 15m = 21096100.
+// #define CFG_CENTER_FREQ_HZ 14097100ULL
+
+// Transmit once every N 2-minute slots. 3 is about a 33% duty cycle.
+// #define CFG_TX_EVERY_N_SLOTS 3
+
+// Board wiring, if yours differs from the C3 Super Mini / DevKitM-1.
+// #define CFG_SDA_PIN 20
+// #define CFG_SCL_PIN 21
+// #define CFG_LED_PIN 8
+// #define CFG_LED_ACTIVE_LOW true
+
+// Hostname for the web interface, reachable at http://<name>.local/
+// #define CFG_MDNS_NAME "wspr"
