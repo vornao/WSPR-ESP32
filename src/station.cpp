@@ -1,115 +1,151 @@
 #include "station.h"
 
 #include <Arduino.h>
-#include <si5351.h>
 
-Station::Station(Radio &radio, Beacon &beacon) : radio_(radio), beacon_(beacon) {}
+using wspr::Beacon;
 
-Station::Result Station::checkRadio(bool refuseWhileTransmitting) const {
-  if (!radio_.ok()) return Result::NoRadio;
-  if (refuseWhileTransmitting && beacon_.transmitting()) return Result::Busy;
+Station::Station(Radio &radio, Beacon &beacon, uint32_t toneDwellMs)
+    : radio_(radio), beacon_(beacon), toneDwellMs_(toneDwellMs) {}
+
+template <typename Fn>
+Station::Result Station::whenIdle(Fn change) {
+  if (!radio_.ready()) return Result::NoRadio;
+  return beacon_.whenIdle(change) ? Result::Ok : Result::Busy;
+}
+
+Station::Result Station::persist() {
+  settings::save(current());
   return Result::Ok;
 }
 
-Station::Result Station::persist(Result r) {
-  if (r == Result::Ok && settings::save(current())) Serial.println("Settings saved.");
-  return r;
-}
-
 Settings Station::current() const {
+  Beacon::State b = beacon_.state();
   Settings s;
-  s.centerHz = beacon_.centerHz();
+  s.centerHz = b.centerHz;
   s.correctionPpb = radio_.correctionPpb();
   s.driveMa = (uint8_t)radio_.driveMa();
-  s.everyNSlots = (uint8_t)beacon_.everyNSlots();
-  s.msgMode = (uint8_t)beacon_.msgMode();
-  s.beaconOn = beacon_.enabled();
+  s.everyNSlots = (uint8_t)b.everyNSlots;
+  s.msgMode = (uint8_t)b.msgMode;
+  s.beaconOn = b.enabled;
   return s;
 }
 
 void Station::apply(const Settings &s) {
   beacon_.setCenterHz(s.centerHz);
-  if (s.everyNSlots >= 1 && s.everyNSlots <= 30) beacon_.setEveryNSlots(s.everyNSlots);
-  if (s.msgMode > 2 || !beacon_.setMsgMode((Beacon::MsgMode)s.msgMode))
-    beacon_.setMsgMode(Beacon::MsgMode::Type1Only);
+  beacon_.setEveryNSlots(s.everyNSlots);
+  if (!beacon_.setMsgMode((Beacon::MsgMode)s.msgMode)) beacon_.setMsgMode(Beacon::MsgMode::Type1Only);
   beacon_.setEnabled(s.beaconOn);
-  if (!radio_.ok()) return;
   radio_.setCorrectionPpb(s.correctionPpb);
   radio_.setDriveMa(s.driveMa);
-  radio_.setFrequencyCentiHz(s.centerHz * SI5351_FREQ_MULT);
+  radio_.setFrequencyCentiHz(s.centerHz * wspr::CENTI_HZ);
 }
 
 Station::Result Station::restoreDefaults() {
-  Result r = checkRadio(true);
-  if (r != Result::Ok) return r;
-  if (carrierOn_) setCarrier(false);
-  apply(settings::defaults());
-  settings::clear();
-  return Result::Ok;
+  Result r = whenIdle([this] {
+    if (testMode_ != TestMode::Off) startTest(TestMode::Off);
+    apply(settings::defaults());
+  });
+  if (r == Result::Ok) settings::clear();
+  return r;
 }
+
+// ---------- radio ----------
 
 Station::Result Station::setCenterHz(int64_t hz) {
-  Result r = checkRadio(true);
-  if (r != Result::Ok) return r;
-  if (hz < 8000 || hz > 160000000) return Result::Invalid;
-  beacon_.setCenterHz((uint64_t)hz);
-  radio_.setFrequencyCentiHz((uint64_t)hz * SI5351_FREQ_MULT);
-  return persist(Result::Ok);
+  if (!limits::centerHz(hz)) return Result::Invalid;
+  Result r = whenIdle([&] {
+    beacon_.setCenterHz((uint64_t)hz);
+    if (testMode_ != TestMode::Tones) radio_.setFrequencyCentiHz((uint64_t)hz * wspr::CENTI_HZ);
+  });
+  return r == Result::Ok ? persist() : r;
 }
 
+// Re-programs the frequency on air, so not during a transmission.
 Station::Result Station::setCorrectionPpb(int64_t ppb) {
-  Result r = checkRadio(true);
-  if (r != Result::Ok) return r;
-  if (ppb < -1000000 || ppb > 1000000) return Result::Invalid;
-  radio_.setCorrectionPpb((int32_t)ppb);
-  return persist(Result::Ok);
+  if (!limits::correctionPpb(ppb)) return Result::Invalid;
+  Result r = whenIdle([&] { radio_.setCorrectionPpb((int32_t)ppb); });
+  return r == Result::Ok ? persist() : r;
 }
 
+// Only changes the amplitude, so it is allowed during a transmission.
 Station::Result Station::setDriveMa(int64_t ma) {
-  Result r = checkRadio(false);
-  if (r != Result::Ok) return r;
-  return persist(radio_.setDriveMa((int)ma) ? Result::Ok : Result::Invalid);
+  if (!radio_.ready()) return Result::NoRadio;
+  if (!limits::driveMa(ma)) return Result::Invalid;
+  radio_.setDriveMa((int)ma);
+  return persist();
 }
 
-Station::Result Station::setCarrier(bool on) {
-  Result r = checkRadio(true);
-  if (r != Result::Ok) return r;
-  carrierOn_ = on;
-  if (on) radio_.setFrequencyCentiHz(beacon_.centerHz() * SI5351_FREQ_MULT);
-  radio_.setOutput(on);
-  beacon_.setPaused(on);
-  return Result::Ok;
-}
+// ---------- beacon ----------
 
 Station::Result Station::setBeaconEnabled(bool on) {
-  Result r = checkRadio(false);
-  if (r != Result::Ok) return r;
+  if (!radio_.ready()) return Result::NoRadio;
   beacon_.setEnabled(on);
-  return persist(Result::Ok);
+  return persist();
 }
 
 Station::Result Station::setEveryNSlots(int64_t n) {
-  Result r = checkRadio(false);
-  if (r != Result::Ok) return r;
-  if (n < 1 || n > 30) return Result::Invalid;
+  if (!limits::everyNSlots(n)) return Result::Invalid;
   beacon_.setEveryNSlots((int)n);
-  return persist(Result::Ok);
+  return persist();
 }
 
 Station::Result Station::setMsgMode(int64_t mode) {
-  if (mode < 0 || mode > 2) return Result::Invalid;
-  return persist(beacon_.setMsgMode((Beacon::MsgMode)mode) ? Result::Ok : Result::Invalid);
+  if (!limits::msgMode(mode) || !beacon_.setMsgMode((Beacon::MsgMode)mode)) return Result::Invalid;
+  return persist();
 }
 
 Station::Result Station::requestNextSlot() {
-  Result r = checkRadio(false);
-  if (r != Result::Ok) return r;
+  if (!radio_.ready()) return Result::NoRadio;
   beacon_.requestNextSlot();
   return Result::Ok;
 }
 
 bool Station::cancel() {
   return beacon_.cancel();
+}
+
+// ---------- test output ----------
+
+Station::Result Station::setTestMode(TestMode mode) {
+  if (mode == testMode_) return Result::Ok;
+  if (suspended_) return Result::Busy;
+  return whenIdle([&] { startTest(mode); });
+}
+
+void Station::startTest(TestMode mode) {
+  testMode_ = mode;
+  tone_ = 0;
+  toneSinceMs_ = millis();
+  uint64_t centerCentiHz = beacon_.state().centerHz * wspr::CENTI_HZ;
+  radio_.setFrequencyCentiHz(centerCentiHz);  // tone 0 is the centre frequency
+  radio_.setOutput(mode != TestMode::Off);
+  updatePause();
+}
+
+void Station::service() {
+  if (testMode_ != TestMode::Tones || millis() - toneSinceMs_ < toneDwellMs_) return;
+  toneSinceMs_ = millis();
+  tone_ = (tone_ + 1) % 4;
+  radio_.setFrequencyCentiHz(wspr::toneCentiHz(beacon_.state().centerHz, (uint8_t)tone_));
+}
+
+// ---------- firmware update ----------
+
+void Station::suspend() {
+  suspended_ = true;
+  beacon_.cancel();
+  if (testMode_ != TestMode::Off) startTest(TestMode::Off);
+  radio_.setOutput(false);
+  updatePause();
+}
+
+void Station::resume() {
+  suspended_ = false;
+  updatePause();
+}
+
+void Station::updatePause() {
+  beacon_.setPaused(suspended_ || testMode_ != TestMode::Off);
 }
 
 const char *Station::describe(Result r) {

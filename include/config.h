@@ -6,6 +6,7 @@
 // `git pull` never conflicts with your station.
 //
 // WiFi credentials and the web/OTA passwords live in include/secrets.h (also gitignored).
+// Out-of-range values stop the build (see the static_asserts in src/main.cpp).
 #pragma once
 
 #include <stdint.h>
@@ -26,7 +27,7 @@
 #endif
 
 #ifndef CFG_POWER_DBM
-#define CFG_POWER_DBM 20                   // reported power (valid: ...10, 13, 17, 20, 23, 27, 30...)
+#define CFG_POWER_DBM 20                   // reported power: 0..60, ending in 0, 3 or 7
 #endif
 
 // ---------- hardware ----------
@@ -62,10 +63,10 @@
 #define CFG_CENTER_FREQ_HZ 14097100ULL     // middle of the 20m WSPR window (14.0970-14.0972 MHz)
 #endif
 #ifndef CFG_TX_RANDOM_OFFSET_HZ
-#define CFG_TX_RANDOM_OFFSET_HZ 80         // random +/- per TX, stays inside the 200 Hz window
+#define CFG_TX_RANDOM_OFFSET_HZ 80         // random +/- per TX; up to 95 stays inside the 200 Hz window
 #endif
 #ifndef CFG_TX_EVERY_N_SLOTS
-#define CFG_TX_EVERY_N_SLOTS 3             // 1 TX per 6 min (~33%); Type 1 every 12 min with a 6-char locator
+#define CFG_TX_EVERY_N_SLOTS 3             // 1..30; 3 = 1 TX per 6 min (~33%); Type 1 every 12 min with a 6-char locator
 #endif
 #ifndef CFG_NTP_SERVER
 #define CFG_NTP_SERVER "pool.ntp.org"
@@ -74,6 +75,9 @@
 // ---------- web interface ----------
 #ifndef CFG_MDNS_NAME
 #define CFG_MDNS_NAME "wspr"               // http://wspr.local/
+#endif
+#ifndef CFG_WEB_CHECK_HOST
+#define CFG_WEB_CHECK_HOST true            // only answer to <name>, <name>.local or the IP (blocks DNS rebinding)
 #endif
 
 // ---------- console ----------
@@ -121,6 +125,7 @@ constexpr const char *NTP_SERVER = CFG_NTP_SERVER;
 
 // ---------- web interface ----------
 constexpr const char *MDNS_NAME = CFG_MDNS_NAME;
+constexpr bool WEB_CHECK_HOST = CFG_WEB_CHECK_HOST;
 
 // ---------- console ----------
 constexpr uint32_t SERIAL_BAUD = CFG_SERIAL_BAUD;

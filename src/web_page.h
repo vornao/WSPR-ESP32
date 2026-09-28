@@ -1,5 +1,5 @@
 // The web control page, served from flash. Polls /api/state once a second and
-// posts changes to /api/cmd.
+// posts changes to /api/cmd (with the X-Requested-With header web_ui.cpp requires).
 #pragma once
 
 static const char WEB_PAGE[] = R"HTML(<!doctype html>
@@ -164,7 +164,8 @@ tr:last-child td { border-bottom: 0; }
       </div>
     </div>
     <div class="switch"><span>Test carrier (pauses beacon)</span><button class="toggle" id="carrier" aria-label="Test carrier on/off"></button></div>
-    <p class="note">Frequency, correction and carrier are locked while transmitting.</p>
+    <div class="switch"><span>Tone sweep: the 4 WSPR tones in turn</span><button class="toggle" id="tones" aria-label="Tone sweep on/off"></button></div>
+    <p class="note">Frequency, correction and the test outputs are locked while transmitting.</p>
   </section>
   </div>
 
@@ -267,6 +268,7 @@ function feedback(name, before, after) {
     case 'correction': return `Correction ${after.correctionPpb} ppb`;
     case 'drive':    return `Drive ${after.driveMa} mA`;
     case 'carrier':  return after.carrier ? 'Test carrier on' : 'Test carrier off';
+    case 'tones':    return after.tones ? 'Tone sweep on' : 'Tone sweep off';
     case 'msgmode':  return `Next TX: ${msgName(after, after.nextPart)}`;
     case 'reset':    return 'Settings restored to config.h defaults';
   }
@@ -278,7 +280,7 @@ async function cmd(name, value) {
   const body = new URLSearchParams({ cmd: name });
   if (value !== undefined) body.set('value', value);
   try {
-    const r = await fetch('/api/cmd', { method: 'POST', body });
+    const r = await fetch('/api/cmd', { method: 'POST', body, headers: { 'X-Requested-With': 'wspr' } });
     const j = await r.json();
     if (j.state) applyState(j.state);
     if (j.ok) toast(feedback(name, before || j.state, j.state), true);
@@ -302,6 +304,7 @@ function render() {
   const pill = $('pill');
   if (s.transmitting) { pill.textContent = 'TX'; pill.className = 'pill tx'; }
   else if (s.carrier) { pill.textContent = 'CARRIER'; pill.className = 'pill carrier'; }
+  else if (s.tones) { pill.textContent = 'TONES'; pill.className = 'pill carrier'; }
   else if (!s.synced) { pill.textContent = 'NO TIME'; pill.className = 'pill'; }
   else if (s.beacon) { pill.textContent = 'READY'; pill.className = 'pill idle'; }
   else { pill.textContent = 'OFF'; pill.className = 'pill'; }
@@ -314,6 +317,9 @@ function render() {
   } else if (s.carrier) {
     $('headline').textContent = `Carrier on ${fmtHz(s.centerHz)}`;
     $('detail').textContent = 'Steady test carrier, beacon paused';
+  } else if (s.tones) {
+    $('headline').textContent = `Tone ${s.tone} on air`;
+    $('detail').textContent = `Tone sweep above ${fmtHz(s.centerHz)}, beacon paused`;
   } else if (s.nextTx > 0 && now) {
     const sec = Math.max(0, Math.round(s.nextTx - now / 1000));
     $('headline').textContent = `Next TX in ${fmtDur(sec)}`;
@@ -334,6 +340,7 @@ function render() {
 
   $('beacon').classList.toggle('on', s.beacon);
   $('carrier').classList.toggle('on', s.carrier);
+  $('tones').classList.toggle('on', s.tones);
   if (document.activeElement !== $('interval')) $('interval').value = s.everyN;
   if (document.activeElement !== $('freq')) $('freq').value = s.centerHz;
   if (document.activeElement !== $('corr')) $('corr').value = s.correctionPpb;
@@ -345,7 +352,7 @@ function render() {
   $('msgNote').textContent = s.parts < 2 ? 'Set a 6-char locator in config.h to enable Type 3.' : MODE_NOTES[s.msgMode];
 
   const locked = s.transmitting;
-  ['setFreq', 'setCorr', 'carrier'].forEach(id => $(id).disabled = locked);
+  ['setFreq', 'setCorr', 'carrier', 'tones'].forEach(id => $(id).disabled = locked);
   document.querySelectorAll('.steps button').forEach(b => b.disabled = locked);
   $('cancel').disabled = !(s.transmitting || s.pending);
   $('cancel').textContent = s.transmitting ? 'Abort TX' : 'Cancel request';
@@ -366,6 +373,7 @@ async function refresh() {
 
 $('beacon').onclick = () => cmd('beacon', s && s.beacon ? 0 : 1);
 $('carrier').onclick = () => cmd('carrier', s && s.carrier ? 0 : 1);
+$('tones').onclick = () => cmd('tones', s && s.tones ? 0 : 1);
 $('interval').onchange = e => cmd('interval', e.target.value);
 $('next').onclick = () => cmd('next');
 $('cancel').onclick = () => cmd('cancel');

@@ -3,17 +3,25 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
+#include <esp_timer.h>
 #include <sys/time.h>
+
+#include <atomic>
+
+#include "utc_text.h"
 
 namespace {
 
-// Set from the SNTP task.
-volatile bool ntpSynced = false;
-volatile bool ntpJustSynced = false;
+// Written by the SNTP task: seconds since boot of the last sync, 0 = never.
+std::atomic<uint32_t> lastSyncS{0};
+std::atomic<bool> justSynced{false};
+
+uint32_t uptimeS() { return (uint32_t)(esp_timer_get_time() / 1000000); }
 
 void onNtpSync(struct timeval *) {
-  ntpSynced = true;
-  ntpJustSynced = true;
+  uint32_t now = uptimeS();
+  lastSyncS = now > 0 ? now : 1;
+  justSynced = true;
 }
 
 }  // namespace
@@ -24,7 +32,7 @@ void TimeSync::begin(const char *ssid, const char *password, const char *ntpServ
   WiFi.begin(ssid, password);
   Serial.printf("WiFi: connecting to '%s'...\n", ssid);
 
-  // Start SNTP after the network stack is up. It re-syncs on its own (default every hour).
+  // SNTP re-syncs on its own (every hour by default).
   sntp_set_time_sync_notification_cb(onNtpSync);
   configTzTime("UTC0", ntpServer);
 }
@@ -36,31 +44,29 @@ void TimeSync::service() {
     if (connected) Serial.printf("WiFi connected, IP %s\n", WiFi.localIP().toString().c_str());
     else Serial.println("WiFi disconnected (will retry)");
   }
-  if (ntpJustSynced) {
-    ntpJustSynced = false;
-    Serial.print("NTP sync: ");
-    printUtc(time(nullptr));
-    Serial.println();
+  if (justSynced.exchange(false)) {
+    Serial.printf("NTP sync: %s\n", utcText(time(nullptr)).s);
   }
+  bool isSynced = synced();
+  if (wasSynced_ && !isSynced) Serial.println("NTP: no sync for too long, time is stale; beacon on hold");
+  wasSynced_ = isSynced;
 }
 
 bool TimeSync::synced() const {
-  return ntpSynced;
+  uint32_t last = lastSyncS;
+  return last != 0 && uptimeS() - last < MAX_SYNC_AGE_S;
+}
+
+int64_t TimeSync::utcUs() const {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
 }
 
 bool TimeSync::wifiConnected() const {
   return WiFi.status() == WL_CONNECTED;
 }
 
-int64_t TimeSync::nowUtcUs() {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  return (int64_t)tv.tv_sec * 1000000LL + tv.tv_usec;
-}
-
-void printUtc(time_t t) {
-  struct tm tm;
-  gmtime_r(&t, &tm);
-  Serial.printf("%04d-%02d-%02d %02d:%02d:%02d UTC", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                tm.tm_hour, tm.tm_min, tm.tm_sec);
+int TimeSync::rssi() const {
+  return wifiConnected() ? WiFi.RSSI() : 0;
 }

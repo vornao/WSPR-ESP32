@@ -1,23 +1,22 @@
-// Serial command menu for tuning and controlling the beacon.
+// Serial command menu for tuning and controlling the beacon. Also logs transmissions.
 #pragma once
 
 #include <Arduino.h>
 #include <stdint.h>
 
-#include "beacon.h"
+#include <wspr_beacon.h>
+
 #include "radio.h"
 #include "station.h"
-#include "status_led.h"
 #include "time_sync.h"
-#include "wspr.h"
 
 class Console {
  public:
-  Console(Station &station, Radio &radio, Beacon &beacon, const TimeSync &time,
-          const wspr::Message &message, StatusLed &led);
+  Console(Station &station, Radio &radio, wspr::Beacon &beacon, const TimeSync &time,
+          const wspr::Message &message, uint64_t stepHz);
 
-  // Call often from loop(): reads serial input and runs complete commands.
-  void poll();
+  // Call often from loop(): runs complete commands and logs transmissions and test tones.
+  void service();
 
   void printHelp();
 
@@ -26,6 +25,7 @@ class Console {
 
  private:
   void handle(String line);
+  void logEvents();
   void printState();
   void printNextTx();
   void printHistory();
@@ -33,15 +33,14 @@ class Console {
   // Prints why a Station action failed (with `usage` for bad input). Returns true on success.
   bool report(Station::Result r, const char *usage);
 
-  void toneTest();
-
   Station &station_;
   Radio &radio_;
-  Beacon &beacon_;
+  wspr::Beacon &beacon_;
   const TimeSync &time_;
   const wspr::Message &message_;
-  StatusLed &led_;
 
   String line_;
   uint64_t stepHz_;
+  uint32_t seenChanges_ = 0;
+  int seenTone_ = -1;
 };

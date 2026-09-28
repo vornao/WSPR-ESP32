@@ -3,17 +3,44 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 
-#include "config.h"
+#include "json_writer.h"
 #include "web_page.h"
+
+using wspr::Beacon;
+
+namespace {
+
+constexpr const char *CSRF_HEADER = "X-Requested-With";
+constexpr const char *CSRF_VALUE = "wspr";
+
+// The page loads nothing from elsewhere; it only talks to this device and to wspr.live.
+constexpr const char *PAGE_CSP =
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    "connect-src 'self' https://db1.wspr.live; img-src 'self' data:; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+const char *statusName(Beacon::TxRecord::Status s) {
+  switch (s) {
+    case Beacon::TxRecord::Status::Done: return "done";
+    case Beacon::TxRecord::Status::Aborted: return "aborted";
+    default: return "onair";
+  }
+}
+
+}  // namespace
 
 WebUi::WebUi(Station &station, Radio &radio, Beacon &beacon, const TimeSync &time,
              const wspr::Message &message)
     : station_(station), radio_(radio), beacon_(beacon), time_(time), message_(message) {}
 
-void WebUi::begin(const char *mdnsName, const char *password) {
-  mdnsName_ = mdnsName;
+void WebUi::begin(const char *hostname, const char *password, bool checkHost) {
+  hostname_ = hostname;
+  hostname_.toLowerCase();
   password_ = password;
+  checkHost_ = checkHost;
 
+  static const char *headers[] = {CSRF_HEADER};
+  server_.collectHeaders(headers, 1);
   server_.on("/", HTTP_GET, [this] { handlePage(); });
   server_.on("/api/state", HTTP_GET, [this] { handleState(); });
   server_.on("/api/history", HTTP_GET, [this] { handleHistory(); });
@@ -23,79 +50,90 @@ void WebUi::begin(const char *mdnsName, const char *password) {
 }
 
 void WebUi::service() {
-  if (!mdnsStarted_ && time_.wifiConnected()) {
-    mdnsStarted_ = MDNS.begin(mdnsName_);
-    if (mdnsStarted_) MDNS.addService("http", "tcp", 80);
-    Serial.printf("Web interface: http://%s.local/  or  http://%s/\n", mdnsName_,
-                  WiFi.localIP().toString().c_str());
+  if (!mdnsTried_ && time_.wifiConnected()) {
+    mdnsTried_ = true;
+    if (MDNS.begin(hostname_.c_str())) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.printf("Web interface: http://%s.local/  or  http://%s/\n", hostname_.c_str(),
+                    WiFi.localIP().toString().c_str());
+    } else {
+      Serial.printf("mDNS failed; web interface at http://%s/\n", WiFi.localIP().toString().c_str());
+    }
   }
   server_.handleClient();
 }
 
-bool WebUi::authorized() {
-  if (password_[0] == '\0' || server_.authenticate("admin", password_)) return true;
-  server_.requestAuthentication();
-  return false;
+// ---------- request checks ----------
+
+bool WebUi::hostAllowed() {
+  if (!checkHost_) return true;
+  String host = server_.hostHeader();
+  int colon = host.indexOf(':');
+  if (colon >= 0) host.remove(colon);
+  host.toLowerCase();
+  return host.isEmpty() || host == hostname_ || host == hostname_ + ".local" ||
+         host == WiFi.localIP().toString();
 }
 
+bool WebUi::admit(bool isCommand) {
+  if (!hostAllowed()) {
+    server_.send(403, "text/plain", "unknown host name");
+    return false;
+  }
+  if (isCommand && server_.header(CSRF_HEADER) != CSRF_VALUE) {
+    server_.send(403, "text/plain", "missing request header");
+    return false;
+  }
+  if (password_[0] != '\0' && !server_.authenticate("admin", password_)) {
+    server_.requestAuthentication();
+    return false;
+  }
+  return true;
+}
+
+// ---------- handlers ----------
+
 void WebUi::handlePage() {
-  if (!authorized()) return;
-  server_.send(200, "text/html", WEB_PAGE);
+  if (!admit(false)) return;
+  server_.sendHeader("Content-Security-Policy", PAGE_CSP);
+  server_.sendHeader("X-Frame-Options", "DENY");
+  server_.sendHeader("X-Content-Type-Options", "nosniff");
+  server_.send_P(200, "text/html", WEB_PAGE, sizeof(WEB_PAGE) - 1);  // straight from flash
 }
 
 void WebUi::handleState() {
-  if (!authorized()) return;
-  char json[1024];
-  stateJson(json, sizeof(json));
-  server_.sendHeader("Cache-Control", "no-store");
-  server_.send(200, "application/json", json);
+  if (!admit(false)) return;
+  static char buf[1536];
+  JsonWriter json(buf, sizeof buf);
+  json.beginObject();
+  writeState(json);
+  json.endObject();
+  sendJson(200, json);
 }
 
 void WebUi::handleHistory() {
-  if (!authorized()) return;
-  static char json[2560];  // HISTORY_SIZE entries of ~100 chars
-  size_t len = 0;
-  len += snprintf(json + len, sizeof(json) - len, "[");
-  for (int i = 0; i < beacon_.historyCount() && len < sizeof(json) - 128; i++) {
-    const Beacon::TxRecord &r = beacon_.history(i);
-    const char *st = r.status == Beacon::TxRecord::Status::Done      ? "done"
-                     : r.status == Beacon::TxRecord::Status::Aborted ? "aborted"
-                                                                     : "onair";
-    len += snprintf(json + len, sizeof(json) - len,
-                    "%s{\"t\":%lld,\"f\":%llu,\"part\":%d,\"msg\":\"%s\",\"st\":\"%s\"}",
-                    i ? "," : "", (long long)r.startUtc, r.freqHz, r.part, message_.partName(r.part), st);
-  }
-  snprintf(json + len, sizeof(json) - len, "]");
-  server_.sendHeader("Cache-Control", "no-store");
-  server_.send(200, "application/json", json);
-}
+  if (!admit(false)) return;
+  Beacon::TxRecord log[Beacon::HISTORY_SIZE];
+  int n = beacon_.history(log, Beacon::HISTORY_SIZE);
 
-void WebUi::stateJson(char *out, size_t size) {
-  int64_t nowMs = TimeSync::nowUtcUs() / 1000;
-  snprintf(out, size,
-           "{\"call\":\"%s\",\"locator\":\"%s\",\"dbm\":%d,\"messageOk\":%s,"
-           "\"radioOk\":%s,\"centerHz\":%llu,\"effectiveHz\":%.2f,\"correctionPpb\":%ld,"
-           "\"driveMa\":%d,\"beacon\":%s,\"everyN\":%d,\"carrier\":%s,\"pending\":%s,"
-           "\"transmitting\":%s,\"symbol\":%d,\"symbols\":%d,\"txFreqHz\":%llu,"
-           "\"wifi\":%s,\"rssi\":%d,\"synced\":%s,\"utcMs\":%lld,\"nextTx\":%lld,"
-           "\"lastTx\":%lld,\"randomOffsetHz\":%d,\"msgMode\":%d,\"parts\":%d,"
-           "\"part\":%d,\"nextPart\":%d,\"msg1\":\"%s\",\"msg2\":\"%s\"}",
-           config::CALLSIGN, config::LOCATOR, config::POWER_DBM, message_.valid() ? "true" : "false",
-           radio_.ok() ? "true" : "false", beacon_.centerHz(),
-           radio_.effectiveHz((double)beacon_.centerHz()), (long)radio_.correctionPpb(),
-           radio_.driveMa(), beacon_.enabled() ? "true" : "false", beacon_.everyNSlots(),
-           station_.carrierOn() ? "true" : "false", beacon_.nextRequested() ? "true" : "false",
-           beacon_.transmitting() ? "true" : "false", beacon_.currentSymbol() + 1, wspr::SYMBOL_COUNT,
-           beacon_.txFreqHz(), time_.wifiConnected() ? "true" : "false", (int)WiFi.RSSI(),
-           time_.synced() ? "true" : "false", time_.synced() ? nowMs : -1LL,
-           (long long)beacon_.nextTxStart(), (long long)beacon_.lastTxStart(),
-           config::TX_RANDOM_OFFSET_HZ, (int)beacon_.msgMode(), message_.parts(),
-           beacon_.currentPart(), beacon_.nextPart(), message_.partName(0),
-           message_.parts() > 1 ? message_.partName(1) : "");
+  static char buf[3072];  // ~110 bytes per entry
+  JsonWriter json(buf, sizeof buf);
+  json.beginArray();
+  for (int i = 0; i < n; i++) {
+    json.beginObject();
+    json.field("t", log[i].startUtc);
+    json.field("f", log[i].freqHz);
+    json.field("part", log[i].part);
+    json.field("msg", message_.partName(log[i].part));
+    json.field("st", statusName(log[i].status));
+    json.endObject();
+  }
+  json.endArray();
+  sendJson(200, json);
 }
 
 void WebUi::handleCommand() {
-  if (!authorized()) return;
+  if (!admit(true)) return;
 
   String cmd = server_.arg("cmd");
   String valueArg = server_.arg("value");
@@ -103,7 +141,8 @@ void WebUi::handleCommand() {
   long long value = strtoll(valueArg.c_str(), &end, 10);
   bool hasValue = valueArg.length() > 0 && *end == '\0';
 
-  Station::Result r = Station::Result::Invalid;
+  using Mode = Station::TestMode;
+  Station::Result r;
   if (cmd == "next") {
     r = station_.requestNextSlot();
   } else if (cmd == "cancel") {
@@ -121,7 +160,9 @@ void WebUi::handleCommand() {
   } else if (cmd == "drive") {
     r = station_.setDriveMa(value);
   } else if (cmd == "carrier") {
-    r = station_.setCarrier(value != 0);
+    r = station_.setTestMode(value ? Mode::Carrier : Mode::Off);
+  } else if (cmd == "tones") {
+    r = station_.setTestMode(value ? Mode::Tones : Mode::Off);
   } else if (cmd == "beacon") {
     r = station_.setBeaconEnabled(value != 0);
   } else if (cmd == "interval") {
@@ -137,12 +178,65 @@ void WebUi::handleCommand() {
   reply(r == Station::Result::Ok, Station::describe(r));
 }
 
+// ---------- JSON ----------
+
 void WebUi::reply(bool ok, const char *error) {
-  char state[1024];
-  stateJson(state, sizeof(state));
-  char json[1200];
-  snprintf(json, sizeof(json), "{\"ok\":%s,\"error\":\"%s\",\"state\":%s}", ok ? "true" : "false",
-           ok ? "" : error, state);
+  static char buf[1664];
+  JsonWriter json(buf, sizeof buf);
+  json.beginObject();
+  json.field("ok", ok);
+  json.field("error", ok ? "" : error);
+  json.beginObject("state");
+  writeState(json);
+  json.endObject();
+  sendJson(ok ? 200 : 400, json);
+}
+
+// The fields of the state object, into the object `json` has open.
+void WebUi::writeState(JsonWriter &json) {
+  Beacon::State b = beacon_.state();
+  bool synced = time_.synced();
+  double centerHz = (double)b.centerHz;
+
+  json.field("call", message_.callsign());
+  json.field("locator", message_.locator());
+  json.field("dbm", message_.powerDbm());
+  json.field("messageOk", message_.valid());
+  json.field("parts", message_.parts());
+  json.field("msg1", message_.partName(wspr::Message::TYPE1));
+  json.field("msg2", message_.partName(wspr::Message::TYPE3));
+
+  json.field("radioOk", radio_.ready());
+  json.field("centerHz", b.centerHz);
+  json.field("effectiveHz", radio_.effectiveHz(centerHz), 2);
+  json.field("correctionPpb", radio_.correctionPpb());
+  json.field("driveMa", radio_.driveMa());
+  json.field("carrier", station_.testMode() == Station::TestMode::Carrier);
+  json.field("tones", station_.testMode() == Station::TestMode::Tones);
+  json.field("tone", station_.testTone());
+
+  json.field("beacon", b.enabled);
+  json.field("everyN", b.everyNSlots);
+  json.field("randomOffsetHz", b.randomOffsetHz);
+  json.field("msgMode", (int)b.msgMode);
+  json.field("pending", b.requested);
+  json.field("transmitting", b.transmitting);
+  json.field("symbol", b.symbol + 1);
+  json.field("symbols", wspr::SYMBOL_COUNT);
+  json.field("txFreqHz", b.txFreqHz);
+  json.field("part", b.part);
+  json.field("nextPart", b.nextPart);
+  json.field("nextTx", b.nextTxUtc);
+  json.field("lastTx", b.lastTxUtc);
+
+  json.field("wifi", time_.wifiConnected());
+  json.field("rssi", time_.rssi());
+  json.field("synced", synced);
+  json.field("utcMs", synced ? time_.utcUs() / 1000 : -1LL);
+}
+
+void WebUi::sendJson(int code, const JsonWriter &json) {
   server_.sendHeader("Cache-Control", "no-store");
-  server_.send(ok ? 200 : 400, "application/json", json);
+  if (json.ok()) server_.send(code, "application/json", json.c_str());
+  else server_.send(500, "text/plain", "response too large");
 }

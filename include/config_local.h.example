@@ -6,7 +6,7 @@
 #pragma once
 
 // ---------- station (required) ----------
-#define CFG_CALLSIGN "N0CALL"   // your callsign
+#define CFG_CALLSIGN "N0CALL"   // your callsign (3-6 characters, no '/' suffixes or prefixes)
 #define CFG_LOCATOR  "JN00AA"   // your Maidenhead locator, 4 or 6 characters
 
 // ---------- optional ----------
@@ -37,3 +37,7 @@
 
 // Hostname for the web interface, reachable at http://<name>.local/
 // #define CFG_MDNS_NAME "wspr"
+
+// The web interface only answers requests addressed to <name>, <name>.local or its IP
+// address. Set to false to reach it through another DNS name or a reverse proxy.
+// #define CFG_WEB_CHECK_HOST true
