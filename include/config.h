@@ -38,10 +38,10 @@
 #define CFG_LED_ACTIVE_LOW true            // Super Mini LED is active-low
 #endif
 #ifndef CFG_SDA_PIN
-#define CFG_SDA_PIN 20
+#define CFG_SDA_PIN 21
 #endif
 #ifndef CFG_SCL_PIN
-#define CFG_SCL_PIN 21
+#define CFG_SCL_PIN 20
 #endif
 
 // ---------- Si5351 ----------
