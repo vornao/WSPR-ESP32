@@ -30,6 +30,7 @@ void TimeSync::begin(const char *ssid, const char *password, const char *ntpServ
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid, password);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
   Serial.printf("WiFi: connecting to '%s'...\n", ssid);
 
   // SNTP re-syncs on its own (every hour by default).
