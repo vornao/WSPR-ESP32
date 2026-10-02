@@ -1,4 +1,4 @@
-// WiFi connection and UTC time from NTP.
+// UTC time from NTP, as the beacon's wspr::Clock. Needs the network: begin() once WiFi is up.
 #pragma once
 
 #include <stdint.h>
@@ -11,20 +11,18 @@ class TimeSync : public wspr::Clock {
   // NTP sync the time no longer counts as synced, and the beacon stops transmitting.
   static constexpr uint32_t MAX_SYNC_AGE_S = 12 * 3600;
 
-  // Starts connecting in the background; does not block.
-  void begin(const char *ssid, const char *password, const char *ntpServer);
+  // Starts syncing in the background (and re-syncing on its own); does not block.
+  void begin(const char *ntpServer);
+  bool started() const { return started_; }
 
-  // Call often from loop(): logs WiFi and NTP status changes.
+  // Call often from loop(): logs syncs, and the time going stale.
   void service();
 
   // wspr::Clock
   bool synced() const override;
   int64_t utcUs() const override;
 
-  bool wifiConnected() const;
-  int rssi() const;
-
  private:
-  bool wifiWasConnected_ = false;
+  bool started_ = false;
   bool wasSynced_ = false;
 };

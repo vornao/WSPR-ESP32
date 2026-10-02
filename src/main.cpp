@@ -9,7 +9,8 @@
 // lib/wspr is the reusable part: protocol, scheduling and the beacon engine. This file
 // wires it to the hardware and to the user interfaces:
 //   radio       Si5351 on CLK0 (the beacon's wspr::Transmitter)
-//   time_sync   WiFi + NTP (the beacon's wspr::Clock)
+//   wifi_link   WiFi station, shared by everything that needs the network
+//   time_sync   UTC from NTP (the beacon's wspr::Clock), started once WiFi is up
 //   station     control actions shared by the console and the web interface
 //   console     serial command menu and TX log
 //   web_ui      web control page and JSON API at http://wspr.local/
@@ -29,6 +30,7 @@
 #include "status_led.h"
 #include "time_sync.h"
 #include "web_ui.h"
+#include "wifi_link.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -57,11 +59,12 @@ namespace {
 
 Radio radio;
 wspr::Message message;
+WifiLink wifi;
 TimeSync timeSync;
 wspr::Beacon beacon(radio, message, timeSync);
 Station station(radio, beacon, config::TONE_DWELL_MS);
-Console console(station, radio, beacon, timeSync, message, config::STEP_HZ);
-WebUi web(station, radio, beacon, timeSync, message);
+Console console(station, radio, beacon, timeSync, wifi, message, config::STEP_HZ);
+WebUi web(station, radio, beacon, timeSync, wifi, message);
 Ota ota;
 StatusLed led;
 
@@ -109,7 +112,7 @@ void setup() {
   station.apply(saved);  // after the message is encoded: the message mode depends on it
   if (!beacon.begin()) Serial.println("ERROR: could not start the beacon task");
 
-  timeSync.begin(WIFI_SSID, WIFI_PASSWORD, config::NTP_SERVER);
+  wifi.begin(WIFI_SSID, WIFI_PASSWORD);  // NTP starts from loop() once connected
   web.begin(config::MDNS_NAME, WEB_PASSWORD, config::WEB_CHECK_HOST);
   ota.begin(
       config::MDNS_NAME, OTA_PASSWORD, [] { station.suspend(); }, [] { station.resume(); });
@@ -118,11 +121,14 @@ void setup() {
 }
 
 void loop() {
+  wifi.service();
+  if (wifi.connected() && !timeSync.started()) timeSync.begin(config::NTP_SERVER);
+
   console.service();
   timeSync.service();
   web.service();
   station.service();
-  ota.service(timeSync.wifiConnected());
+  ota.service(wifi.connected());
 
   if (beacon.transmitting()) led.setMode(StatusLed::Mode::Solid);
   else if (station.testMode() != Station::TestMode::Off) led.setMode(StatusLed::Mode::Blink);

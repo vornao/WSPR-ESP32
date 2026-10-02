@@ -9,11 +9,12 @@
 #include "radio.h"
 #include "station.h"
 #include "time_sync.h"
+#include "wifi_link.h"
 
 class Console {
  public:
   Console(Station &station, Radio &radio, wspr::Beacon &beacon, const TimeSync &time,
-          const wspr::Message &message, uint64_t stepHz);
+          const WifiLink &wifi, const wspr::Message &message, uint64_t stepHz);
 
   // Call often from loop(): runs complete commands and logs transmissions and test tones.
   void service();
@@ -37,6 +38,7 @@ class Console {
   Radio &radio_;
   wspr::Beacon &beacon_;
   const TimeSync &time_;
+  const WifiLink &wifi_;
   const wspr::Message &message_;
 
   String line_;

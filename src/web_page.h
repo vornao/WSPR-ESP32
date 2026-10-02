@@ -8,6 +8,8 @@ static const char WEB_PAGE[] = R"HTML(<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WSPR Beacon</title>
+<link rel="icon" href="data:,">  <!-- no /favicon.ico request: the device serves one connection at a time -->
+
 <style>
 :root {
   --bg: #f4f5f7; --card: #fff; --text: #1b1d21; --muted: #6b7280; --line: #e3e5e9;
@@ -231,6 +233,19 @@ const pad = n => String(n).padStart(2, '0');
 const fmtUtc = ms => { const d = new Date(ms); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`; };
 const fmtDur = sec => sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${pad(sec % 60)}s`;
 
+// fetch() with a time limit: a request lost on the way must not hold a browser connection
+// (6 per host) and queue everything after it.
+async function getJson(url, opts = {}, ms = 4000) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(url, { cache: 'no-store', ...opts, signal: ctl.signal });
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function toast(msg, ok) {
   const t = $('toast');
   t.textContent = msg;
@@ -280,14 +295,14 @@ async function cmd(name, value) {
   const body = new URLSearchParams({ cmd: name });
   if (value !== undefined) body.set('value', value);
   try {
-    const r = await fetch('/api/cmd', { method: 'POST', body, headers: { 'X-Requested-With': 'wspr' } });
-    const j = await r.json();
+    // Longer limit: the device may be writing the setting to flash.
+    const j = await getJson('/api/cmd', { method: 'POST', body, headers: { 'X-Requested-With': 'wspr' } }, 8000);
     if (j.state) applyState(j.state);
     if (j.ok) toast(feedback(name, before || j.state, j.state), true);
     else toast(j.error || 'failed', false);
   } catch (e) {
-    toast('device unreachable', false);
-    refresh();
+    toast('no reply from the device; check the state before retrying', false);
+    poll();
   }
 }
 
@@ -362,8 +377,7 @@ function render() {
 async function refresh() {
   const mySeq = seq;
   try {
-    const r = await fetch('/api/state', { cache: 'no-store' });
-    const state = await r.json();
+    const state = await getJson('/api/state');
     if (mySeq === seq) applyState(state);  // a command reply arrived meanwhile: it is newer
   } catch (e) {
     $('pill').textContent = 'OFFLINE';
@@ -392,8 +406,7 @@ let historyKey = null;
 function cell(tr, text, cls) { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; tr.appendChild(td); }
 async function loadHistory() {
   try {
-    const r = await fetch('/api/history', { cache: 'no-store' });
-    const list = await r.json();
+    const list = await getJson('/api/history');
     const body = $('history');
     body.replaceChildren();
     for (const h of list) {
@@ -460,8 +473,21 @@ $('spotRefresh').onclick = loadSpots;
 $('spotWin').onchange = loadSpots;
 loadSpots();
 
-refresh();
-setInterval(refresh, 1000);
+// Poll once a second, but only after the previous reply (or timeout), so a slow device
+// doesn't get a growing queue of requests. Hidden tabs stop polling.
+let pollTimer = null;
+let polling = false;
+async function poll() {
+  clearTimeout(pollTimer);
+  if (polling || document.hidden) return;
+  polling = true;
+  await refresh();
+  polling = false;
+  pollTimer = setTimeout(poll, 1000);
+}
+document.addEventListener('visibilitychange', poll);
+
+poll();
 setInterval(render, 250);
 </script>
 </body>

@@ -1,7 +1,6 @@
 #include "web_ui.h"
 
 #include <ESPmDNS.h>
-#include <WiFi.h>
 
 #include "json_writer.h"
 #include "web_page.h"
@@ -19,6 +18,10 @@ constexpr const char *PAGE_CSP =
     "connect-src 'self' https://db1.wspr.live; img-src 'self' data:; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+// A real request arrives right behind the connection; give a slow link this long first.
+constexpr uint32_t IDLE_CONNECTION_MS = 500;
+constexpr uint32_t MDNS_RETRY_MS = 30000;
+
 const char *statusName(Beacon::TxRecord::Status s) {
   switch (s) {
     case Beacon::TxRecord::Status::Done: return "done";
@@ -29,13 +32,23 @@ const char *statusName(Beacon::TxRecord::Status s) {
 
 }  // namespace
 
+void HttpServer::handleClient() {
+  if (_currentStatus == HC_WAIT_READ && !_currentClient.available() &&
+      millis() - _statusChange > IDLE_CONNECTION_MS && _server.hasClient()) {
+    _currentClient.stop();
+    _currentStatus = HC_NONE;  // the base class now takes the waiting connection
+  }
+  WebServer::handleClient();
+}
+
 WebUi::WebUi(Station &station, Radio &radio, Beacon &beacon, const TimeSync &time,
-             const wspr::Message &message)
-    : station_(station), radio_(radio), beacon_(beacon), time_(time), message_(message) {}
+             const WifiLink &wifi, const wspr::Message &message)
+    : station_(station), radio_(radio), beacon_(beacon), time_(time), wifi_(wifi), message_(message) {}
 
 void WebUi::begin(const char *hostname, const char *password, bool checkHost) {
   hostname_ = hostname;
   hostname_.toLowerCase();
+  hostnameLocal_ = hostname_ + ".local";
   password_ = password;
   checkHost_ = checkHost;
 
@@ -50,15 +63,21 @@ void WebUi::begin(const char *hostname, const char *password, bool checkHost) {
 }
 
 void WebUi::service() {
-  if (!mdnsTried_ && time_.wifiConnected()) {
-    mdnsTried_ = true;
-    if (MDNS.begin(hostname_.c_str())) {
+  if (!mdnsStarted_ && wifi_.connected() && (!mdnsTried_ || millis() - mdnsTriedMs_ >= MDNS_RETRY_MS)) {
+    mdnsStarted_ = MDNS.begin(hostname_.c_str());
+    if (mdnsStarted_) {
       MDNS.addService("http", "tcp", 80);
       Serial.printf("Web interface: http://%s.local/  or  http://%s/\n", hostname_.c_str(),
-                    WiFi.localIP().toString().c_str());
+                    wifi_.localIp().toString().c_str());
     } else {
-      Serial.printf("mDNS failed; web interface at http://%s/\n", WiFi.localIP().toString().c_str());
+      MDNS.end();  // a half-started responder would make every retry fail
+      if (!mdnsTried_) {
+        Serial.printf("mDNS failed (will retry); web interface at http://%s/\n",
+                      wifi_.localIp().toString().c_str());
+      }
     }
+    mdnsTried_ = true;
+    mdnsTriedMs_ = millis();
   }
   server_.handleClient();
 }
@@ -71,8 +90,9 @@ bool WebUi::hostAllowed() {
   int colon = host.indexOf(':');
   if (colon >= 0) host.remove(colon);
   host.toLowerCase();
-  return host.isEmpty() || host == hostname_ || host == hostname_ + ".local" ||
-         host == WiFi.localIP().toString();
+  if (host.isEmpty() || host == hostname_ || host == hostnameLocal_) return true;
+  IPAddress ip;
+  return ip.fromString(host) && ip == wifi_.localIp();  // parsed in place, no allocation
 }
 
 bool WebUi::admit(bool isCommand) {
@@ -229,8 +249,8 @@ void WebUi::writeState(JsonWriter &json) {
   json.field("nextTx", b.nextTxUtc);
   json.field("lastTx", b.lastTxUtc);
 
-  json.field("wifi", time_.wifiConnected());
-  json.field("rssi", time_.rssi());
+  json.field("wifi", wifi_.connected());
+  json.field("rssi", wifi_.rssi());
   json.field("synced", synced);
   json.field("utcMs", synced ? time_.utcUs() / 1000 : -1LL);
 }

@@ -20,13 +20,23 @@
 #include "radio.h"
 #include "station.h"
 #include "time_sync.h"
+#include "wifi_link.h"
 
 class JsonWriter;
+
+// WebServer serves one connection at a time and waits up to 5 s for the request on each.
+// Browsers open spare connections they may never use, and one of those would hold up every
+// other request; this drops an idle connection as soon as another one is waiting.
+class HttpServer : public WebServer {
+ public:
+  using WebServer::WebServer;
+  void handleClient() override;
+};
 
 class WebUi {
  public:
   WebUi(Station &station, Radio &radio, wspr::Beacon &beacon, const TimeSync &time,
-        const wspr::Message &message);
+        const WifiLink &wifi, const wspr::Message &message);
 
   // `password` empty = no login; otherwise HTTP basic auth with user "admin".
   // `checkHost` refuses requests addressed to any name but <hostname>, <hostname>.local
@@ -47,15 +57,19 @@ class WebUi {
   void writeState(JsonWriter &json);  // the state fields, into an open object
   void sendJson(int code, const JsonWriter &json);
 
-  WebServer server_{80};
+  HttpServer server_{80};
   Station &station_;
   Radio &radio_;
   wspr::Beacon &beacon_;
   const TimeSync &time_;
+  const WifiLink &wifi_;
   const wspr::Message &message_;
 
-  String hostname_;  // lower case
+  String hostname_;       // lower case
+  String hostnameLocal_;  // hostname_ + ".local", so requests don't build it
   const char *password_ = "";
   bool checkHost_ = true;
+  bool mdnsStarted_ = false;
   bool mdnsTried_ = false;
+  uint32_t mdnsTriedMs_ = 0;
 };

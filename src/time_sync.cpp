@@ -1,7 +1,6 @@
 #include "time_sync.h"
 
 #include <Arduino.h>
-#include <WiFi.h>
 #include <esp_sntp.h>
 #include <esp_timer.h>
 #include <sys/time.h>
@@ -26,25 +25,15 @@ void onNtpSync(struct timeval *) {
 
 }  // namespace
 
-void TimeSync::begin(const char *ssid, const char *password, const char *ntpServer) {
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(ssid, password);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  Serial.printf("WiFi: connecting to '%s'...\n", ssid);
-
+void TimeSync::begin(const char *ntpServer) {
   // SNTP re-syncs on its own (every hour by default).
   sntp_set_time_sync_notification_cb(onNtpSync);
   configTzTime("UTC0", ntpServer);
+  started_ = true;
+  Serial.printf("NTP: syncing with %s...\n", ntpServer);
 }
 
 void TimeSync::service() {
-  bool connected = wifiConnected();
-  if (connected != wifiWasConnected_) {
-    wifiWasConnected_ = connected;
-    if (connected) Serial.printf("WiFi connected, IP %s\n", WiFi.localIP().toString().c_str());
-    else Serial.println("WiFi disconnected (will retry)");
-  }
   if (justSynced.exchange(false)) {
     Serial.printf("NTP sync: %s\n", utcText(time(nullptr)).s);
   }
@@ -62,12 +51,4 @@ int64_t TimeSync::utcUs() const {
   struct timeval tv;
   gettimeofday(&tv, nullptr);
   return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
-}
-
-bool TimeSync::wifiConnected() const {
-  return WiFi.status() == WL_CONNECTED;
-}
-
-int TimeSync::rssi() const {
-  return wifiConnected() ? WiFi.RSSI() : 0;
 }

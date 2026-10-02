@@ -225,7 +225,8 @@ lib/wspr/              reusable WSPR engine
 src/                   this firmware
   main.cpp               wiring
   radio.*                Si5351 on CLK0, as a wspr::Transmitter
-  time_sync.*            WiFi + NTP, as a wspr::Clock
+  wifi_link.*            WiFi station, shared by NTP, the web UI and OTA
+  time_sync.*            NTP, as a wspr::Clock (started once WiFi is up)
   station.*              control actions shared by the console and the web UI
   console.*              serial menu
   web_ui.*, web_page.h   web page and JSON API

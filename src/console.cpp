@@ -30,8 +30,8 @@ const char *statusName(Beacon::TxRecord::Status s) {
 }  // namespace
 
 Console::Console(Station &station, Radio &radio, Beacon &beacon, const TimeSync &time,
-                 const wspr::Message &message, uint64_t stepHz)
-    : station_(station), radio_(radio), beacon_(beacon), time_(time), message_(message),
+                 const WifiLink &wifi, const wspr::Message &message, uint64_t stepHz)
+    : station_(station), radio_(radio), beacon_(beacon), time_(time), wifi_(wifi), message_(message),
       stepHz_(stepHz) {}
 
 void Console::service() {
@@ -272,7 +272,7 @@ void Console::printState() {
   Serial.printf("  beacon:     %s, every %d slot(s) (%d min)\n", b.enabled ? "ON" : "OFF", b.everyNSlots,
                 b.everyNSlots * 2);
   Serial.printf("  test:       %s\n", test[(int)station_.testMode()]);
-  Serial.printf("  WiFi:       %s\n", time_.wifiConnected() ? "connected" : "not connected");
+  Serial.printf("  WiFi:       %s\n", wifi_.connected() ? "connected" : "not connected");
   Serial.printf("  time:       %s\n", time_.synced() ? utcText(time(nullptr)).s : "not synced");
   if (b.transmitting) {
     Serial.printf("  TX:         symbol %d/%d at %llu Hz\n", b.symbol + 1, wspr::SYMBOL_COUNT, b.txFreqHz);
