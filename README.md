@@ -46,8 +46,8 @@ Default wiring (you can change the pins in `config_local.h`):
 
 | ESP32-C3 | Si5351 |
 |---|---|
-| GPIO20 | SDA |
-| GPIO21 | SCL |
+| GPIO21 | SDA |
+| GPIO20 | SCL |
 | 3V3 | VIN |
 | GND | GND |
 
@@ -103,7 +103,7 @@ default, and `git pull` never conflicts with your settings.
 | `CFG_XTAL_FREQ_HZ` | `25000000` | some Si5351 boards use 27 MHz |
 | `CFG_XTAL_LOAD_PF` | `8` | 6, 8 or 10 |
 | `CFG_DRIVE_MA` | `8` | output drive: 2, 4, 6 or 8 mA |
-| `CFG_SDA_PIN` / `CFG_SCL_PIN` | `20` / `21` | I²C pins |
+| `CFG_SDA_PIN` / `CFG_SCL_PIN` | `21` / `20` | I²C pins |
 | `CFG_LED_PIN` / `CFG_LED_ACTIVE_LOW` | `8` / `true` | status LED |
 | `CFG_MDNS_NAME` | `"wspr"` | web interface at `http://<name>.local/` |
 | `CFG_WEB_CHECK_HOST` | `true` | see [Security](#security) |
